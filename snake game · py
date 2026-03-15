@@ -1,0 +1,333 @@
+#!/usr/bin/env python3
+"""
+╔══════════════════════════════════════════════════════════════╗
+║              🐍 SNAKE GAME - Terminal Edition                ║
+║                   Built with Python + curses                 ║
+╚══════════════════════════════════════════════════════════════╝
+"""
+
+import curses
+import random
+import time
+import json
+import os
+
+# ─── Constants ────────────────────────────────────────────────
+WIDTH       = 40
+HEIGHT      = 20
+SCORE_FILE  = "snake_highscore.json"
+
+# ─── Directions ───────────────────────────────────────────────
+UP    = (-1, 0)
+DOWN  = (1,  0)
+LEFT  = (0, -1)
+RIGHT = (0,  1)
+
+# ─── Difficulty Settings ──────────────────────────────────────
+LEVELS = {
+    "1": {"name": "EASY",   "speed": 0.15, "color": "GREEN"},
+    "2": {"name": "MEDIUM", "speed": 0.10, "color": "YELLOW"},
+    "3": {"name": "HARD",   "speed": 0.07, "color": "RED"},
+    "4": {"name": "INSANE", "speed": 0.04, "color": "MAGENTA"},
+}
+
+# ─── High Score ───────────────────────────────────────────────
+def load_highscore():
+    if os.path.exists(SCORE_FILE):
+        try:
+            with open(SCORE_FILE) as f:
+                return json.load(f).get("highscore", 0)
+        except Exception:
+            return 0
+    return 0
+
+def save_highscore(score):
+    hs = load_highscore()
+    if score > hs:
+        with open(SCORE_FILE, "w") as f:
+            json.dump({"highscore": score}, f)
+        return True
+    return False
+
+# ─── Draw Border ──────────────────────────────────────────────
+def draw_border(win, color):
+    h, w = win.getmaxyx()
+    win.attron(color)
+    win.border('|', '|', '-', '-', '+', '+', '+', '+')
+    win.attroff(color)
+
+# ─── Draw Score Panel ─────────────────────────────────────────
+def draw_panel(stdscr, score, highscore, level_name, length):
+    h, w = stdscr.getmaxyx()
+    panel_y = HEIGHT + 4
+    try:
+        stdscr.addstr(panel_y,     2, f" SCORE    : {score:<6}",    curses.color_pair(3) | curses.A_BOLD)
+        stdscr.addstr(panel_y + 1, 2, f" BEST     : {highscore:<6}", curses.color_pair(4) | curses.A_BOLD)
+        stdscr.addstr(panel_y + 2, 2, f" LENGTH   : {length:<6}",    curses.color_pair(5) | curses.A_BOLD)
+        stdscr.addstr(panel_y + 3, 2, f" LEVEL    : {level_name:<6}", curses.color_pair(6) | curses.A_BOLD)
+        stdscr.addstr(panel_y + 5, 2, " CONTROLS : Arrow Keys / WASD", curses.color_pair(2))
+        stdscr.addstr(panel_y + 6, 2, " QUIT     : Q / ESC",           curses.color_pair(2))
+        stdscr.addstr(panel_y + 7, 2, " PAUSE    : P / SPACE",         curses.color_pair(2))
+    except curses.error:
+        pass
+
+# ─── Main Game ────────────────────────────────────────────────
+def game(stdscr, level_key):
+    level      = LEVELS[level_key]
+    speed      = level["speed"]
+    level_name = level["name"]
+    highscore  = load_highscore()
+
+    # ─── Colors Setup ─────────────────────────────────────────
+    curses.start_color()
+    curses.init_pair(1, curses.COLOR_GREEN,   curses.COLOR_BLACK)  # Snake
+    curses.init_pair(2, curses.COLOR_CYAN,    curses.COLOR_BLACK)  # Info
+    curses.init_pair(3, curses.COLOR_YELLOW,  curses.COLOR_BLACK)  # Score
+    curses.init_pair(4, curses.COLOR_MAGENTA, curses.COLOR_BLACK)  # Best
+    curses.init_pair(5, curses.COLOR_WHITE,   curses.COLOR_BLACK)  # Length
+    curses.init_pair(6, curses.COLOR_RED,     curses.COLOR_BLACK)  # Level
+    curses.init_pair(7, curses.COLOR_RED,     curses.COLOR_BLACK)  # Food
+    curses.init_pair(8, curses.COLOR_WHITE,   curses.COLOR_BLACK)  # Border
+
+    curses.curs_set(0)
+    stdscr.nodelay(True)
+    stdscr.timeout(50)
+
+    # ─── Game Window ──────────────────────────────────────────
+    win = curses.newwin(HEIGHT + 2, WIDTH + 2, 2, 2)
+    win.keypad(True)
+
+    # ─── Init Snake ───────────────────────────────────────────
+    snake     = [(HEIGHT // 2, WIDTH // 4 + i) for i in range(3, 0, -1)]
+    direction = RIGHT
+    next_dir  = RIGHT
+
+    # ─── Place Food ───────────────────────────────────────────
+    def place_food():
+        while True:
+            pos = (random.randint(1, HEIGHT - 1), random.randint(1, WIDTH - 1))
+            if pos not in snake:
+                return pos
+
+    food    = place_food()
+    score   = 0
+    paused  = False
+    bonuses = []  # bonus food items
+
+    # ─── Title ────────────────────────────────────────────────
+    try:
+        stdscr.addstr(0, 2, " 🐍 SNAKE GAME ", curses.color_pair(1) | curses.A_BOLD)
+        stdscr.addstr(0, 20, f" {level_name} MODE ", curses.color_pair(6) | curses.A_BOLD)
+    except curses.error:
+        pass
+
+    last_bonus_time = time.time()
+    bonus_interval  = 15  # spawn bonus food every 15 sec
+
+    while True:
+        # ─── Input ────────────────────────────────────────────
+        key = stdscr.getch()
+
+        if key in (ord('q'), ord('Q'), 27):
+            break
+
+        if key in (ord('p'), ord('P'), ord(' ')):
+            paused = not paused
+            if paused:
+                try:
+                    win.addstr(HEIGHT // 2, WIDTH // 2 - 3, " PAUSED ", curses.color_pair(3) | curses.A_BOLD)
+                    win.refresh()
+                except curses.error:
+                    pass
+            continue
+
+        if paused:
+            continue
+
+        # Direction change
+        if key in (curses.KEY_UP,    ord('w'), ord('W')) and direction != DOWN:
+            next_dir = UP
+        elif key in (curses.KEY_DOWN,  ord('s'), ord('S')) and direction != UP:
+            next_dir = DOWN
+        elif key in (curses.KEY_LEFT,  ord('a'), ord('A')) and direction != RIGHT:
+            next_dir = LEFT
+        elif key in (curses.KEY_RIGHT, ord('d'), ord('D')) and direction != LEFT:
+            next_dir = RIGHT
+
+        direction = next_dir
+
+        # ─── Move Snake ───────────────────────────────────────
+        head    = snake[0]
+        new_head = (head[0] + direction[0], head[1] + direction[1])
+
+        # Wall collision
+        if (new_head[0] <= 0 or new_head[0] >= HEIGHT + 1 or
+                new_head[1] <= 0 or new_head[1] >= WIDTH + 1):
+            break
+
+        # Self collision
+        if new_head in snake:
+            break
+
+        snake.insert(0, new_head)
+
+        # ─── Eat Food ─────────────────────────────────────────
+        ate = False
+        if new_head == food:
+            score += 10
+            food   = place_food()
+            ate    = True
+            # Speed up slightly every 50 points
+            if score % 50 == 0 and speed > 0.03:
+                speed -= 0.005
+        else:
+            # Check bonus food
+            for b in bonuses[:]:
+                if new_head == b["pos"]:
+                    score   += b["value"]
+                    bonuses.remove(b)
+                    ate = True
+                    break
+
+        if not ate:
+            snake.pop()
+
+        # ─── Spawn Bonus Food ─────────────────────────────────
+        now = time.time()
+        if now - last_bonus_time > bonus_interval:
+            if len(bonuses) < 2:
+                bpos = place_food()
+                bonuses.append({"pos": bpos, "value": 25, "time": now})
+            last_bonus_time = now
+
+        # Remove expired bonus food (after 8 sec)
+        bonuses = [b for b in bonuses if now - b["time"] < 8]
+
+        # ─── Draw ─────────────────────────────────────────────
+        win.clear()
+        draw_border(win, curses.color_pair(8) | curses.A_BOLD)
+
+        # Draw food
+        try:
+            win.addch(food[0], food[1], '●', curses.color_pair(7) | curses.A_BOLD)
+        except curses.error:
+            pass
+
+        # Draw bonus food
+        for b in bonuses:
+            try:
+                win.addch(b["pos"][0], b["pos"][1], '★', curses.color_pair(3) | curses.A_BOLD)
+            except curses.error:
+                pass
+
+        # Draw snake
+        for i, seg in enumerate(snake):
+            try:
+                if i == 0:
+                    # Head
+                    if direction == UP:    ch = '▲'
+                    elif direction == DOWN: ch = '▼'
+                    elif direction == LEFT: ch = '◄'
+                    else:                   ch = '►'
+                    win.addch(seg[0], seg[1], ch, curses.color_pair(1) | curses.A_BOLD)
+                else:
+                    win.addch(seg[0], seg[1], '█', curses.color_pair(1))
+            except curses.error:
+                pass
+
+        win.refresh()
+
+        # ─── Update Panel ─────────────────────────────────────
+        if score > highscore:
+            highscore = score
+        draw_panel(stdscr, score, highscore, level_name, len(snake))
+        stdscr.refresh()
+
+        time.sleep(speed)
+
+    # ─── Game Over ────────────────────────────────────────────
+    new_record = save_highscore(score)
+    win.clear()
+    draw_border(win, curses.color_pair(7) | curses.A_BOLD)
+
+    msgs = [
+        ("╔══════════════════╗", HEIGHT // 2 - 3),
+        ("║    GAME  OVER    ║", HEIGHT // 2 - 2),
+        ("╚══════════════════╝", HEIGHT // 2 - 1),
+        (f"   SCORE  : {score}",   HEIGHT // 2 + 1),
+        (f"   BEST   : {highscore}", HEIGHT // 2 + 2),
+    ]
+    if new_record:
+        msgs.append(("  🏆 NEW HIGH SCORE!", HEIGHT // 2 + 3))
+
+    for msg, y in msgs:
+        try:
+            x = max(1, (WIDTH - len(msg)) // 2)
+            win.addstr(y, x, msg, curses.color_pair(7) | curses.A_BOLD)
+        except curses.error:
+            pass
+
+    win.refresh()
+    time.sleep(3)
+
+# ─── Main Menu ────────────────────────────────────────────────
+def main_menu(stdscr):
+    curses.start_color()
+    curses.init_pair(1, curses.COLOR_GREEN,   curses.COLOR_BLACK)
+    curses.init_pair(2, curses.COLOR_YELLOW,  curses.COLOR_BLACK)
+    curses.init_pair(3, curses.COLOR_CYAN,    curses.COLOR_BLACK)
+    curses.init_pair(4, curses.COLOR_MAGENTA, curses.COLOR_BLACK)
+    curses.init_pair(5, curses.COLOR_RED,     curses.COLOR_BLACK)
+    curses.curs_set(0)
+
+    highscore = load_highscore()
+
+    while True:
+        stdscr.clear()
+
+        art = [
+            "  ███████╗███╗   ██╗ █████╗ ██╗  ██╗███████╗",
+            "  ██╔════╝████╗  ██║██╔══██╗██║ ██╔╝██╔════╝",
+            "  ███████╗██╔██╗ ██║███████║█████╔╝ █████╗  ",
+            "  ╚════██║██║╚██╗██║██╔══██║██╔═██╗ ██╔══╝  ",
+            "  ███████║██║ ╚████║██║  ██║██║  ██╗███████╗",
+            "  ╚══════╝╚═╝  ╚═══╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝",
+        ]
+
+        for i, line in enumerate(art):
+            try:
+                stdscr.addstr(i + 1, 0, line, curses.color_pair(1) | curses.A_BOLD)
+            except curses.error:
+                pass
+
+        try:
+            stdscr.addstr(8,  4, "🏆 HIGH SCORE : " + str(highscore), curses.color_pair(2) | curses.A_BOLD)
+            stdscr.addstr(10, 4, "SELECT DIFFICULTY:", curses.color_pair(3) | curses.A_BOLD)
+            stdscr.addstr(12, 6, "[ 1 ]  EASY    - Relaxed speed",   curses.color_pair(1))
+            stdscr.addstr(13, 6, "[ 2 ]  MEDIUM  - Normal speed",    curses.color_pair(2))
+            stdscr.addstr(14, 6, "[ 3 ]  HARD    - Fast speed",      curses.color_pair(5))
+            stdscr.addstr(15, 6, "[ 4 ]  INSANE  - Extreme speed",   curses.color_pair(4))
+            stdscr.addstr(17, 6, "[ Q ]  QUIT",                       curses.color_pair(3))
+            stdscr.addstr(19, 4, "Press 1 / 2 / 3 / 4 to start...", curses.color_pair(3))
+        except curses.error:
+            pass
+
+        stdscr.refresh()
+
+        key = stdscr.getch()
+        if key in (ord('1'), ord('2'), ord('3'), ord('4')):
+            game(stdscr, chr(key))
+            highscore = load_highscore()
+        elif key in (ord('q'), ord('Q'), 27):
+            break
+
+# ─── Entry Point ──────────────────────────────────────────────
+def main():
+    try:
+        curses.wrapper(main_menu)
+    except KeyboardInterrupt:
+        pass
+    print("\n  Thanks for playing Snake! 🐍\n")
+
+if __name__ == "__main__":
+    main()
